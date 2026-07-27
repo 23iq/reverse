@@ -3,6 +3,7 @@
 # cache when setup is run from a working tree that contains local secrets.
 **
 !Dockerfile
+!assets.go
 !go.mod
 !go.sum
 !cmd

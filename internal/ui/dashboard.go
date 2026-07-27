@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/23iq/reverse/internal/buildinfo"
 )
 
 type EventKind uint8
@@ -71,6 +73,11 @@ type eventMsg struct {
 type eventsClosedMsg struct{}
 type dashboardTickMsg time.Time
 
+var (
+	dashboardStatusStyle = panelStyle.Copy().Padding(0, 1)
+	dashboardLogStyle    = panelStyle.Copy().Padding(0, 1)
+)
+
 type DashboardModel struct {
 	events <-chan Event
 
@@ -104,12 +111,13 @@ func NewDashboard(events <-chan Event, options DashboardOptions) DashboardModel 
 		options.MaxLogLines = 1000
 	}
 
-	return DashboardModel{
+	model := DashboardModel{
 		events:      events,
 		logo:        NewLogo(),
 		viewport:    viewport.New(80, 12),
-		width:       80,
-		height:      28,
+		width:       defaultUIWidth,
+		height:      defaultUIHeight,
+		ready:       true,
 		publicURL:   options.PublicURL,
 		localTarget: options.LocalTarget,
 		startedAt:   options.StartTime,
@@ -117,6 +125,8 @@ func NewDashboard(events <-chan Event, options DashboardOptions) DashboardModel 
 		maxLogLines: options.MaxLogLines,
 		followLogs:  true,
 	}
+	model.resizeViewport()
+	return model
 }
 
 func RunDashboard(events <-chan Event, options DashboardOptions) error {
@@ -152,9 +162,9 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.logo.Width = msg.Width
+		m.width = effectiveWidth(msg.Width)
+		m.height = effectiveHeight(msg.Height)
+		m.logo.Width = m.width
 		m.resizeViewport()
 		m.ready = true
 		return m, nil
@@ -292,16 +302,25 @@ func (m *DashboardModel) refreshLogs() {
 }
 
 func (m *DashboardModel) resizeViewport() {
-	width := m.width - 6
-	if width < 20 {
-		width = 20
+	width := effectiveWidth(m.width)
+	height := effectiveHeight(m.height)
+	headerHeight := lipgloss.Height(m.renderStatusCard())
+
+	logChromeHeight := 1
+	if width >= minPanelWidth {
+		logChromeHeight += dashboardLogStyle.GetVerticalFrameSize()
 	}
-	height := m.height - 20
-	if height < 5 {
-		height = 5
+	viewportHeight := height - headerHeight - logChromeHeight
+	if viewportHeight < 0 {
+		viewportHeight = 0
 	}
-	m.viewport.Width = width
-	m.viewport.Height = height
+
+	viewportWidth := width
+	if width >= minPanelWidth {
+		viewportWidth = panelContentWidth(dashboardLogStyle, width)
+	}
+	m.viewport.Width = max(1, viewportWidth)
+	m.viewport.Height = viewportHeight
 	m.refreshLogs()
 }
 
@@ -325,45 +344,144 @@ func (m DashboardModel) Snapshot() DashboardSnapshot {
 
 func (m DashboardModel) View() string {
 	if !m.ready {
-		return "\n  Starting dashboard..."
+		return m.renderStatusCard()
 	}
 
-	logo := lipgloss.NewStyle().
-		Width(m.width).
-		Align(lipgloss.Center).
-		Render(m.logo.View())
-
-	status := ErrorStyle.Render("● OFFLINE")
-	if m.online {
-		status = SuccessStyle.Render("● ONLINE")
+	statusCard := m.renderStatusCard()
+	if m.viewport.Height <= 0 {
+		return statusCard
 	}
-	if m.closed {
-		status += MutedStyle.Render("  event stream closed")
+
+	return statusCard + "\n" + m.renderLogPanel()
+}
+
+func (m DashboardModel) renderLogPanel() string {
+	logTitleWidth := m.viewport.Width
+	logTitle := TitleStyle.Render(fitPlainText("Access log", logTitleWidth))
+	help := "  ↑/↓ scroll  end follow  q quit"
+	if lipgloss.Width("Access log"+help) <= logTitleWidth {
+		logTitle += MutedStyle.Render(help)
+	}
+	logBody := logTitle + "\n" + m.viewport.View()
+	return renderResponsivePanel(dashboardLogStyle, logBody, m.width)
+}
+
+func (m DashboardModel) renderStatusCard() string {
+	width := effectiveWidth(m.width)
+	height := effectiveHeight(m.height)
+	if height < 12 {
+		return m.renderCondensedStatusCard(width, height < 8)
 	}
 
 	snapshot := m.Snapshot()
-	info := strings.Join([]string{
-		status,
-		labelValue("Public URL", fallback(m.publicURL, "waiting for server")),
-		labelValue("Local target", fallback(m.localTarget, "not set")),
-		labelValue("Uptime", FormatDuration(snapshot.Uptime)),
-	}, "\n")
+	contentWidth := width
+	if width >= minPanelWidth {
+		contentWidth = panelContentWidth(dashboardStatusStyle, width)
+	}
 
-	metrics := strings.Join([]string{
+	metrics := m.renderDashboardMetrics(contentWidth)
+	var body string
+	if contentWidth >= 54 {
+		logo := m.logo
+		logo.Compact = true
+		logo.Width = min(28, contentWidth/2)
+		renderedLogo := logo.View()
+		logoWidth := lipgloss.Width(renderedLogo)
+		infoWidth := max(20, contentWidth-logoWidth-3)
+		info := m.renderDashboardInfo(infoWidth, snapshot)
+		top := lipgloss.JoinHorizontal(
+			lipgloss.Center,
+			renderedLogo,
+			strings.Repeat(" ", 3),
+			info,
+		)
+		body = top + "\n" + metrics
+	} else {
+		body = m.renderDashboardInfo(contentWidth, snapshot) + "\n" + metrics
+	}
+
+	return renderResponsivePanel(dashboardStatusStyle, body, width)
+}
+
+func (m DashboardModel) renderCondensedStatusCard(width int, plain bool) string {
+	contentWidth := width
+	style := dashboardStatusStyle
+	if !plain && width >= minPanelWidth {
+		contentWidth = panelContentWidth(style, width)
+	} else {
+		plain = true
+	}
+
+	body := strings.Join([]string{
+		m.dashboardStatusLine(contentWidth, true),
+		compactLine("URL", fallback(m.publicURL, "waiting"), contentWidth),
+		compactLine("Local", fallback(m.localTarget, "not set"), contentWidth),
+	}, "\n")
+	if plain {
+		return lipgloss.NewStyle().
+			Width(width).
+			MaxWidth(width).
+			Render(body)
+	}
+	return renderResponsivePanel(style, body, width)
+}
+
+func (m DashboardModel) renderDashboardInfo(width int, snapshot DashboardSnapshot) string {
+	return strings.Join([]string{
+		m.dashboardStatusLine(width, false),
+		dashboardLabelValue("Public URL", fallback(m.publicURL, "waiting for server"), width),
+		dashboardLabelValue("Local target", fallback(m.localTarget, "not set"), width),
+		dashboardLabelValue("Uptime", FormatDuration(snapshot.Uptime), width),
+	}, "\n")
+}
+
+func (m DashboardModel) dashboardStatusLine(width int, includeName bool) string {
+	state := "● OFFLINE"
+	statusStyle := ErrorStyle
+	if m.online {
+		state = "● ONLINE"
+		statusStyle = SuccessStyle
+	}
+
+	if includeName {
+		nameAndBadge := "REVERSE " + buildinfo.Version + "  "
+		if lipgloss.Width(nameAndBadge+state) <= width {
+			line := TitleStyle.Render("REVERSE") +
+				MutedStyle.Render(" "+buildinfo.Version+"  ") +
+				statusStyle.Render(state)
+			if m.closed && lipgloss.Width(nameAndBadge+state+"  stream closed") <= width {
+				line += MutedStyle.Render("  stream closed")
+			}
+			return line
+		}
+		return statusStyle.Render(fitPlainText(state, width))
+	}
+
+	line := statusStyle.Render(state)
+	badge := "  " + buildinfo.Version
+	if lipgloss.Width(state+badge) <= width {
+		line += MutedStyle.Render(badge)
+	}
+	if m.closed && lipgloss.Width(state+badge+"  stream closed") <= width {
+		line += MutedStyle.Render("  stream closed")
+	}
+	return line
+}
+
+func (m DashboardModel) renderDashboardMetrics(width int) string {
+	entries := []string{
 		metric("Requests", fmt.Sprintf("%d", m.requests)),
 		metric("Incoming", FormatBytes(m.bytesIn)),
 		metric("Outgoing", FormatBytes(m.bytesOut)),
 		metric("Errors", fmt.Sprintf("%d", m.errors)),
-	}, "   ")
-
-	infoPanel := panelStyle.Width(max(24, m.width-6)).Render(info + "\n\n" + metrics)
-	logTitle := TitleStyle.Render("Access log") +
-		MutedStyle.Render("  ↑/↓ scroll  end follow  q quit")
-	logPanel := panelStyle.Width(max(24, m.width-6)).
-		Height(max(7, m.viewport.Height+1)).
-		Render(logTitle + "\n" + m.viewport.View())
-
-	return logo + "\n" + infoPanel + "\n" + logPanel
+	}
+	if width >= 60 {
+		return fitRenderedLine(strings.Join(entries, "   "), width)
+	}
+	return strings.Join([]string{
+		fitRenderedLine(entries[0]+"   "+entries[1], width),
+		fitRenderedLine(entries[2]+"   "+entries[3], width),
+	}, "\n")
 }
 
 func metric(label, value string) string {
@@ -372,6 +490,17 @@ func metric(label, value string) string {
 
 func labelValue(label, value string) string {
 	return labelStyle.Render(fmt.Sprintf("%-13s", label)) + " " + valueStyle.Render(value)
+}
+
+func dashboardLabelValue(label, value string, width int) string {
+	const labelWidth = 13
+	if width <= labelWidth+1 {
+		return compactLine(label, value, width)
+	}
+	valueWidth := width - labelWidth - 1
+	return labelStyle.Render(fmt.Sprintf("%-13s", fitPlainText(label, labelWidth))) +
+		" " +
+		valueStyle.Render(fitPlainText(value, valueWidth))
 }
 
 func fallback(value, fallbackValue string) string {

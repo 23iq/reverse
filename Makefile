@@ -1,4 +1,4 @@
-VERSION ?= dev
+VERSION ?= v1alpha
 PREFIX ?= /usr/local
 
 MODULE := github.com/23iq/reverse

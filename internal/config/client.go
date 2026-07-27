@@ -17,6 +17,9 @@ import (
 const (
 	configDirectoryName = "reverse"
 	clientFileName      = "config.json"
+	// DefaultLocalHost lets the operating-system resolver try every loopback
+	// address registered for localhost (normally both ::1 and 127.0.0.1).
+	DefaultLocalHost = "localhost"
 )
 
 var ErrNotConfigured = errors.New("reverse is not configured")
@@ -102,7 +105,7 @@ func (c Client) Validate() error {
 		return err
 	}
 	if c.LocalHost == "" {
-		c.LocalHost = "127.0.0.1"
+		c.LocalHost = DefaultLocalHost
 	}
 	if ip := net.ParseIP(c.LocalHost); ip == nil && c.LocalHost != "localhost" {
 		return errors.New("local host must be localhost or an IP address")
@@ -135,7 +138,7 @@ func LoadClient(path string) (Client, error) {
 		return Client{}, fmt.Errorf("decode client config: %w", err)
 	}
 	if cfg.LocalHost == "" {
-		cfg.LocalHost = "127.0.0.1"
+		cfg.LocalHost = DefaultLocalHost
 	}
 	if err := cfg.Validate(); err != nil {
 		return Client{}, fmt.Errorf("invalid client config: %w", err)
@@ -158,7 +161,7 @@ func SaveClient(path string, cfg Client) error {
 	}
 	cfg.ServerURL = normalized
 	if cfg.LocalHost == "" {
-		cfg.LocalHost = "127.0.0.1"
+		cfg.LocalHost = DefaultLocalHost
 	}
 	if err := cfg.Validate(); err != nil {
 		return err

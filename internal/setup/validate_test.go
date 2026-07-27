@@ -28,6 +28,18 @@ func TestNormalizeOptions(t *testing.T) {
 	if options.ContainerName != "reverse-server" {
 		t.Fatalf("ContainerName = %q", options.ContainerName)
 	}
+
+	embeddedOptions, err := normalizeOptions(Options{
+		Domain:   "tunnel.example.com",
+		Password: "secret",
+		RootDir:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("normalizeOptions(embedded context) error = %v", err)
+	}
+	if embeddedOptions.SourceDir != "" {
+		t.Fatalf("SourceDir = %q, want embedded context sentinel", embeddedOptions.SourceDir)
+	}
 }
 
 func TestValidateRejectsUnsafeValues(t *testing.T) {

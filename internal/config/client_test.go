@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -81,5 +82,33 @@ func TestLoadClientNotConfigured(t *testing.T) {
 	_, err := LoadClient(filepath.Join(t.TempDir(), "missing.json"))
 	if !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("LoadClient() error = %v, want ErrNotConfigured", err)
+	}
+}
+
+func TestClientWithoutLocalHostUsesLocalhost(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(file).Encode(Client{
+		ServerURL: "https://example.com",
+		Password:  "correct horse battery staple",
+	}); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadClient(path)
+	if err != nil {
+		t.Fatalf("LoadClient() error = %v", err)
+	}
+	if got.LocalHost != DefaultLocalHost {
+		t.Fatalf("LocalHost = %q, want %q", got.LocalHost, DefaultLocalHost)
 	}
 }

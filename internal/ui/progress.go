@@ -9,6 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/23iq/reverse/internal/buildinfo"
 )
 
 type ProgressStatus string
@@ -116,8 +118,8 @@ func newSetupProgressModel(
 		logo:       NewLogo(),
 		spinner:    progressSpinner,
 		stageIndex: make(map[string]int),
-		width:      80,
-		height:     28,
+		width:      defaultUIWidth,
+		height:     defaultUIHeight,
 	}
 }
 
@@ -230,9 +232,9 @@ func waitForProgressContext(ctx context.Context) tea.Cmd {
 func (m SetupProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.logo.Width = msg.Width
+		m.width = effectiveWidth(msg.Width)
+		m.height = effectiveHeight(msg.Height)
+		m.logo.Width = m.width
 		return m, nil
 
 	case logoTickMsg:
@@ -378,24 +380,41 @@ func (m *SetupProgressModel) failCurrentStage(err error) {
 }
 
 func (m SetupProgressModel) View() string {
-	logo := lipgloss.NewStyle().
-		Width(m.width).
-		Align(lipgloss.Center).
-		Render(m.logo.View())
+	width := effectiveWidth(m.width)
+	logoModel := m.logo
+	logoModel.Width = width
+	if effectiveHeight(m.height) < 16 {
+		logoModel.Compact = true
+	}
+	logo := centerToWidth(logoModel.View(), width)
+
+	bodyWidth := width
+	if width >= minPanelWidth {
+		bodyWidth = panelContentWidth(panelStyle, width)
+	}
 
 	var body strings.Builder
-	body.WriteString(TitleStyle.Render("Installing REVERSE"))
+	title := "Installing REVERSE " + buildinfo.Version
+	body.WriteString(TitleStyle.Render(fitPlainText(title, bodyWidth)))
 	body.WriteByte('\n')
-	body.WriteString(MutedStyle.Render("Preparing this server for secure reverse tunnels."))
+	body.WriteString(MutedStyle.Render(fitPlainText(
+		"Preparing this server for secure reverse tunnels.",
+		bodyWidth,
+	)))
 	body.WriteString("\n\n")
 
 	if len(m.stages) == 0 {
 		body.WriteString(m.spinner.View())
-		body.WriteString(" ")
-		body.WriteString(valueStyle.Render("Waiting for the installer..."))
+		if bodyWidth > 2 {
+			body.WriteString(" ")
+			body.WriteString(valueStyle.Render(fitPlainText(
+				"Waiting for the installer...",
+				bodyWidth-2,
+			)))
+		}
 	} else {
 		for index, stage := range m.stages {
-			body.WriteString(m.renderProgressStage(stage))
+			body.WriteString(m.renderProgressStageWidth(stage, bodyWidth))
 			if index < len(m.stages)-1 {
 				body.WriteByte('\n')
 			}
@@ -405,22 +424,47 @@ func (m SetupProgressModel) View() string {
 	body.WriteString("\n\n")
 	switch {
 	case m.finalErr != nil:
-		body.WriteString(ErrorStyle.Render("Setup failed: " + sanitizeLine(m.finalErr.Error(), 2048)))
+		body.WriteString(ErrorStyle.Render(fitPlainText(
+			"Setup failed: "+sanitizeLine(m.finalErr.Error(), 2048),
+			bodyWidth,
+		)))
 	case m.cancelled:
-		body.WriteString(WarningStyle.Render("Cancellation requested. Finishing rollback..."))
+		body.WriteString(WarningStyle.Render(fitPlainText(
+			"Cancellation requested. Finishing rollback...",
+			bodyWidth,
+		)))
 	case m.completed:
-		body.WriteString(SuccessStyle.Render("Setup completed successfully."))
+		body.WriteString(SuccessStyle.Render(fitPlainText(
+			"Setup completed successfully.",
+			bodyWidth,
+		)))
 	default:
-		body.WriteString(KeyStyle.Render("ctrl+c"))
-		body.WriteString(MutedStyle.Render("  cancel setup"))
+		hint := "ctrl+c  cancel setup"
+		if bodyWidth < lipgloss.Width(hint) {
+			hint = "ctrl+c cancel"
+		}
+		key := fitPlainText("ctrl+c", bodyWidth)
+		body.WriteString(KeyStyle.Render(key))
+		if bodyWidth > lipgloss.Width(key) {
+			body.WriteString(MutedStyle.Render(
+				fitPlainText(strings.TrimPrefix(hint, "ctrl+c"), bodyWidth-lipgloss.Width(key)),
+			))
+		}
 	}
 
-	panelWidth := max(28, m.width-6)
-	panel := panelStyle.Width(panelWidth).Render(body.String())
+	panel := renderResponsivePanel(panelStyle, body.String(), width)
 	return logo + "\n" + panel
 }
 
 func (m SetupProgressModel) renderProgressStage(stage ProgressStage) string {
+	width := effectiveWidth(m.width)
+	if width >= minPanelWidth {
+		width = panelContentWidth(panelStyle, width)
+	}
+	return m.renderProgressStageWidth(stage, width)
+}
+
+func (m SetupProgressModel) renderProgressStageWidth(stage ProgressStage, width int) string {
 	var icon string
 	switch stage.Status {
 	case ProgressDone:
@@ -432,20 +476,23 @@ func (m SetupProgressModel) renderProgressStage(stage ProgressStage) string {
 	default:
 		icon = m.spinner.View()
 	}
+	if width <= lipgloss.Width(icon)+1 {
+		return fitRenderedLine(icon, width)
+	}
 
 	var row strings.Builder
 	row.WriteString(icon)
 	row.WriteString(" ")
-	row.WriteString(TitleStyle.Render(stage.Stage))
-	if stage.Message != "" {
+	row.WriteString(TitleStyle.Render(fitPlainText(stage.Stage, width-2)))
+	if stage.Message != "" && width > 2 {
 		row.WriteString("\n  ")
-		row.WriteString(MutedStyle.Render(stage.Message))
+		row.WriteString(MutedStyle.Render(fitPlainText(stage.Message, width-2)))
 	}
-	if stage.Command != "" {
+	if stage.Command != "" && width > 4 {
 		row.WriteString("\n  ")
 		row.WriteString(KeyStyle.Render("$"))
 		row.WriteString(" ")
-		row.WriteString(MutedStyle.Render(stage.Command))
+		row.WriteString(MutedStyle.Render(fitPlainText(stage.Command, width-4)))
 	}
 	return row.String()
 }

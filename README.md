@@ -1,13 +1,13 @@
 # Reverse
 
-Reverse exposes a local HTTP service through a VPS you control. It fills the
-same basic role as `ngrok http`, but the gateway, credentials, TLS certificate,
-and traffic stay on your own machines.
+Reverse `v1alpha` exposes a local HTTP service through a VPS you control. It
+fills the same basic role as `ngrok http`, but the gateway, credentials, TLS
+certificate, and traffic stay on your own machines.
 
 ```text
 reverse -p 3000
 
-https://tunnel.example.com  ->  http://127.0.0.1:3000
+https://tunnel.example.com  ->  http://localhost:3000
 ```
 
 It supports ordinary HTTP requests, request and response streaming, and
@@ -39,7 +39,7 @@ Reverse client on your computer
           |
           | HTTP
           v
-127.0.0.1:3000
+localhost:3000 (::1 or 127.0.0.1)
 ```
 
 The client makes an outbound secure WebSocket connection to
@@ -70,8 +70,11 @@ goes through Caddy and HTTPS on the configured domain.
 - Root access for `reverse --setup`.
 
 The setup command installs Docker, Caddy, Certbot, and the ACL utilities needed
-for certificate access. Git, Make, and Go are still needed to clone and build
-the `reverse` binary itself. The module currently targets Go 1.24.
+for certificate access. The installed `reverse` binary contains the
+allowlisted server build context, so the VPS does not need a cloned repository,
+Git, Make, or a host Go toolchain during setup. Git, Make, and Go are only
+needed when building the `reverse` binary from source. The module currently
+targets Go 1.24.
 
 DNS should be in place before setup. If an AAAA record exists, it must point to
 this VPS as well. Setup checks public DNS and compares it with addresses
@@ -91,7 +94,7 @@ it is marked as managed by Reverse.
 
 ## Build and install
 
-Use the same source tree to build the VPS and client binaries:
+Build the self-contained VPS/client binary from source:
 
 ```sh
 git clone https://github.com/23iq/reverse.git
@@ -107,11 +110,11 @@ system-wide installation, place that file somewhere already listed in your
 
 ## Set up the VPS
 
-Run setup from the repository root. The Docker build needs the `Dockerfile` and
-the rest of the source tree in the current directory.
+The installed binary carries its Dockerfile and server sources. Run setup from
+any directory; it materializes a private temporary build context and removes it
+after the image is built.
 
 ```sh
-cd /path/to/reverse
 sudo reverse --setup
 ```
 
@@ -129,14 +132,12 @@ Set `REVERSE_EMAIL` if you want Let's Encrypt registration and expiry notices
 associated with an email address:
 
 ```sh
-cd /path/to/reverse
 sudo env REVERSE_EMAIL=admin@example.com reverse --setup
 ```
 
 For an unattended run, pass both credentials through the environment:
 
 ```sh
-cd /path/to/reverse
 sudo env \
   REVERSE_DOMAIN=tunnel.example.com \
   REVERSE_PASSWORD='use-a-long-random-password' \
@@ -173,7 +174,8 @@ Setup performs the following work:
   lineage and installs renewal hooks.
 - Writes `/etc/reverse/server.json` with mode `0600`. It contains the domain,
   listener settings, and a one-way password hash.
-- Builds the local Docker image `reverse-server:local`.
+- Builds the local Docker image `reverse-server:local` from the server sources
+  embedded in the installed binary.
 - Starts the `reverse-server` container with host networking and an
   `unless-stopped` restart policy.
 - Writes `/etc/caddy/Caddyfile` with mode `0644`, validates it, and enables
@@ -302,15 +304,19 @@ Open the configured URL:
 https://tunnel.example.com
 ```
 
-The default local target is `127.0.0.1`. Use `--host` when the application is
-listening on another local interface:
+The default local target is `localhost`. The operating-system resolver can
+reach an application bound to either IPv6 loopback (`::1`) or IPv4 loopback
+(`127.0.0.1`). Use `--host` to require one exact address or when the
+application listens on another local interface:
 
 ```sh
+reverse --host 127.0.0.1 -p 3000
 reverse --host 192.168.1.20 -p 8080
 ```
 
 Reverse checks that the local target accepts a TCP connection before opening
-the dashboard. Once connected, the dashboard shows:
+the dashboard. Once connected, the dashboard keeps its status card pinned at
+the top while access logs scroll inside a fixed viewport. It shows:
 
 - Online and reconnecting state.
 - Public URL and local target.
@@ -323,8 +329,41 @@ the dashboard. Once connected, the dashboard shows:
 Press `q`, `Esc`, or `Ctrl+C` to close the dashboard and stop forwarding.
 Arrow keys, `k`, Page Up, and End control the access log viewport.
 
+### Run in the background
+
+Start a detached client that survives closing the terminal:
+
+```sh
+reverse -p 3000 --background
+# short form
+reverse -p 3000 -d
+```
+
+Inspect it from another terminal:
+
+```sh
+reverse --status
+# short form
+reverse -s
+```
+
+Status includes the process ID, tunnel state, public URL, local target, uptime,
+connection attempt, request and byte counters, and the latest error when one
+exists. Stop it gracefully with:
+
+```sh
+reverse --stop
+# short form
+reverse -x
+```
+
+The detached worker reads the password from the mode-`0600` client
+configuration; it never puts the password in process arguments or daemon state.
+Runtime state, the control socket, and the lock are kept in a private
+per-user directory. Only one background Reverse tunnel runs per user.
+
 Run `reverse`, `reverse -h`, or `reverse --help` to see the command summary.
-`reverse --version` prints the installed version.
+`reverse --version` prints `reverse v1alpha`.
 
 ## Port and session behavior
 
@@ -355,6 +394,12 @@ inbound access on ports 80 and 443. Port 8787 also remains loopback-only.
 A server accepts one active Reverse client at a time. A second client stays in
 the reconnect loop until the active client disconnects. One client may carry
 many concurrent HTTP requests and WebSockets through yamux.
+
+Reverse transports requests into the local HTTP application. Connections that
+the application itself makes to PostgreSQL, MySQL, SQLite, Redis, queues, or
+other backing services stay local and continue to work normally. Reverse does
+not expose those database protocols directly because it is not a generic TCP
+tunnel.
 
 The paths `/_reverse/tunnel` and `/_reverse/health` belong to the gateway and
 are not forwarded to the local application.
@@ -387,13 +432,15 @@ cd /path/to/reverse
 git pull
 make build
 sudo install -Dm0755 bin/reverse /usr/local/bin/reverse
+cd /
 sudo reverse --setup
 ```
 
 Setup asks for the domain and password again, rebuilds the server image, and
 checks the replacement's loopback health endpoint before Caddy sends traffic
 to it. It uses managed-component checks and a rollback path during replacement.
-Run it from the updated repository root.
+The final `cd /` is only illustrative: setup uses the sources embedded in the
+newly installed binary and therefore works from any directory.
 
 To change the password, rerun VPS setup and then run `reverse --config` on the
 client. The old client password stops working as soon as the replacement
@@ -412,11 +459,12 @@ directory, which is usually not what you want.
 Confirm the application is running and bound to the address passed to Reverse:
 
 ```sh
-curl -v http://127.0.0.1:3000/
+curl -v http://localhost:3000/
 ss -ltn 'sport = :3000'
 ```
 
-Use `--host` if the service is not bound to `127.0.0.1`.
+The default tries the loopback addresses registered for `localhost`. Use an
+explicit `--host 127.0.0.1`, `--host ::1`, or another address when needed.
 
 ### Authentication fails
 
@@ -463,9 +511,10 @@ the client could no longer reach its local HTTP service.
 
 ### Another tunnel is active
 
-Stop the previous client with `q` or `Ctrl+C`. If the old process disappeared
-without a clean shutdown, the server clears it when the WebSocket connection
-times out or closes, and the waiting client reconnects.
+Stop a foreground client with `q` or `Ctrl+C`; stop a detached client with
+`reverse --stop`. If the old process disappeared without a clean shutdown, the
+server clears it when the WebSocket connection times out or closes, and the
+waiting client reconnects.
 
 ## Security notes
 
@@ -503,9 +552,10 @@ make vet
 The integration tests create loopback TCP and WebSocket listeners. Run them in
 an environment that permits local network binds.
 
-The Docker build context is an allowlist containing only the module files and
-Go source trees. If a new source directory becomes part of the server build,
-add it to both `Dockerfile` and `.dockerignore`; do not replace the explicit
+The Docker build context and the source context embedded into the client binary
+are explicit allowlists containing only the module files and Go source trees.
+If a new source directory becomes part of the server build, add it to
+`assets.go`, `Dockerfile`, and `.dockerignore`; do not replace the explicit
 copies with `COPY . .`.
 
 The tunnel implementation lives in `internal/tunnel`; setup and generated

@@ -11,8 +11,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,11 +59,22 @@ func run(parent context.Context, options cli.Options, output io.Writer) error {
 	case cli.ActionTunnel:
 		ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		if options.Background {
+			return runBackgroundStart(ctx, options, output)
+		}
 		return runTunnel(ctx, options)
+	case cli.ActionStatus:
+		return runDaemonStatus(output)
+	case cli.ActionStop:
+		return runDaemonStop(parent, output)
 	case cli.ActionServer:
 		ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return runServer(ctx, options.ServerConfig, output)
+	case cli.ActionDaemonWorker:
+		ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return runDaemonWorker(ctx, options)
 	default:
 		return errors.New("unknown command")
 	}
@@ -95,7 +104,7 @@ func runConfigure(ctx context.Context, output io.Writer) error {
 	clientConfig := config.Client{
 		ServerURL: serverURL,
 		Password:  password,
-		LocalHost: "127.0.0.1",
+		LocalHost: config.DefaultLocalHost,
 	}
 	if err := config.SaveClient(path, clientConfig); err != nil {
 		return err
@@ -152,35 +161,16 @@ func probeServer(ctx context.Context, serverURL string) error {
 }
 
 func runTunnel(ctx context.Context, options cli.Options) error {
-	clientConfig, err := config.LoadClient("")
+	runtime, err := resolveTunnelRuntime(ctx, options)
 	if err != nil {
 		return err
 	}
-	localHost := clientConfig.LocalHost
-	if options.Host != "" {
-		localHost = options.Host
-	}
-	localAddress := net.JoinHostPort(localHost, strconv.Itoa(options.Port))
-	if err := checkLocalService(ctx, localAddress); err != nil {
-		return err
-	}
+	bridge := newDashboardBridge(ctx, runtime.publicURL, runtime.localAddress)
 
-	parsedServerURL, err := url.Parse(clientConfig.ServerURL)
-	if err != nil {
-		return fmt.Errorf("parse configured server URL: %w", err)
-	}
-	publicURL := strings.TrimRight(clientConfig.ServerURL, "/")
-	bridge := newDashboardBridge(ctx, publicURL, localAddress)
-
-	client, err := tunnel.NewClient(tunnel.ClientConfig{
-		ServerURL:    clientConfig.ServerURL,
-		Token:        clientConfig.Password,
-		Domain:       parsedServerURL.Hostname(),
-		PublicPort:   uint16(options.Port),
-		LocalAddress: localAddress,
-		OnEvent:      bridge.onTunnelEvent,
-		OnStatus:     bridge.onTunnelStatus,
-		OnTraffic:    bridge.onTunnelTraffic,
+	client, err := newTunnelClient(options, runtime, tunnelCallbacks{
+		onEvent:   bridge.onTunnelEvent,
+		onStatus:  bridge.onTunnelStatus,
+		onTraffic: bridge.onTunnelTraffic,
 	})
 	if err != nil {
 		bridge.close()
@@ -202,8 +192,8 @@ func runTunnel(ctx context.Context, options cli.Options) error {
 	}()
 
 	dashboardErr := ui.RunDashboard(bridge.events, ui.DashboardOptions{
-		PublicURL:   publicURL,
-		LocalTarget: localAddress,
+		PublicURL:   runtime.publicURL,
+		LocalTarget: runtime.localAddress,
 		StartTime:   time.Now(),
 		MaxLogLines: 2000,
 	})
@@ -505,21 +495,12 @@ func runSetup(ctx context.Context, options cli.Options, output io.Writer) error 
 		return err
 	}
 
-	sourceDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("find source directory: %w", err)
-	}
-	if _, err := os.Stat(filepath.Join(sourceDir, "Dockerfile")); err != nil {
-		return errors.New("run reverse --setup from the cloned reverse repository (Dockerfile not found)")
-	}
-
 	setupOptions := setup.Options{
-		Domain:    parsed.Hostname(),
-		Password:  password,
-		Email:     strings.TrimSpace(os.Getenv("REVERSE_EMAIL")),
-		DryRun:    options.DryRun,
-		RootDir:   options.SetupRoot,
-		SourceDir: sourceDir,
+		Domain:   parsed.Hostname(),
+		Password: password,
+		Email:    strings.TrimSpace(os.Getenv("REVERSE_EMAIL")),
+		DryRun:   options.DryRun,
+		RootDir:  options.SetupRoot,
 	}
 	if terminalAttached(os.Stdin) && terminalAttached(os.Stdout) {
 		err = ui.RunSetupProgress(ctx, func(runCtx context.Context, events chan<- ui.ProgressEvent) error {

@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/23iq/reverse/internal/buildinfo"
 )
 
 var ErrCancelled = errors.New("configuration cancelled")
@@ -131,15 +133,21 @@ func (m FormModel) Init() tea.Cmd {
 func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.logo.Width = msg.Width
-		inputWidth := msg.Width - 14
+		m.width = effectiveWidth(msg.Width)
+		m.height = effectiveHeight(msg.Height)
+		m.logo.Width = m.width
+
+		panelWidth := min(62, m.width)
+		inputWidth := panelWidth
+		if panelWidth >= minPanelWidth {
+			inputWidth = panelContentWidth(panelStyle, panelWidth)
+		}
+		inputWidth -= 2
 		if inputWidth > 52 {
 			inputWidth = 52
 		}
-		if inputWidth < 20 {
-			inputWidth = 20
+		if inputWidth < 1 {
+			inputWidth = 1
 		}
 		m.inputs[0].Width = inputWidth
 		m.inputs[1].Width = inputWidth
@@ -225,20 +233,21 @@ func (m FormModel) submitOrAdvance() (tea.Model, tea.Cmd) {
 }
 
 func (m FormModel) View() string {
-	logo := m.logo.View()
-	if m.width > 0 {
-		logo = lipgloss.NewStyle().
-			Width(m.width).
-			Align(lipgloss.Center).
-			Render(logo)
+	width := effectiveWidth(m.width)
+	logoModel := m.logo
+	logoModel.Width = width
+	if effectiveHeight(m.height) < 16 {
+		logoModel.Compact = true
 	}
+	logo := centerToWidth(logoModel.View(), width)
 
 	if m.stage == formIntro {
 		dots := strings.Repeat("·", m.introFrame%4)
-		message := MutedStyle.Render(fmt.Sprintf("Preparing REVERSE%-3s", dots))
-		if m.width > 0 {
-			message = lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(message)
-		}
+		messageText := fmt.Sprintf("Preparing REVERSE %s%-3s", buildinfo.Version, dots)
+		message := centerToWidth(
+			MutedStyle.Render(fitPlainText(messageText, width)),
+			width,
+		)
 		return logo + "\n" + message
 	}
 
@@ -251,34 +260,41 @@ func (m FormModel) View() string {
 		action = "Save configuration"
 	}
 
+	panelWidth := min(62, width)
+	bodyWidth := panelWidth
+	if panelWidth >= minPanelWidth {
+		bodyWidth = panelContentWidth(panelStyle, panelWidth)
+	}
+
 	fields := strings.Join([]string{
-		TitleStyle.Render(title),
-		MutedStyle.Render(description),
+		TitleStyle.Render(fitPlainText(title, bodyWidth)),
+		MutedStyle.Render(fitPlainText(description, bodyWidth)),
 		"",
-		labelStyle.Render("Domain"),
-		m.inputs[0].View(),
+		labelStyle.Render(fitPlainText("Domain", bodyWidth)),
+		fitRenderedLine(m.inputs[0].View(), bodyWidth),
 		"",
-		labelStyle.Render("Password"),
-		m.inputs[1].View(),
+		labelStyle.Render(fitPlainText("Password", bodyWidth)),
+		fitRenderedLine(m.inputs[1].View(), bodyWidth),
 	}, "\n")
 
 	if m.errText != "" {
-		fields += "\n\n" + ErrorStyle.Render(m.errText)
+		fields += "\n\n" + ErrorStyle.Render(fitPlainText(m.errText, bodyWidth))
 	}
-	fields += "\n\n" + KeyStyle.Render("enter") + MutedStyle.Render("  "+action)
-	fields += "   " + KeyStyle.Render("tab") + MutedStyle.Render("  next field")
-	fields += "   " + KeyStyle.Render("esc") + MutedStyle.Render("  cancel")
+	if bodyWidth >= 48 {
+		fields += "\n\n" + KeyStyle.Render("enter") + MutedStyle.Render("  "+action)
+		fields += "   " + KeyStyle.Render("tab") + MutedStyle.Render("  next field")
+		fields += "   " + KeyStyle.Render("esc") + MutedStyle.Render("  cancel")
+	} else {
+		actionHint := KeyStyle.Render("enter") + MutedStyle.Render(
+			fitPlainText("  "+action, max(1, bodyWidth-lipgloss.Width("enter"))),
+		)
+		navigationHint := KeyStyle.Render("tab") + MutedStyle.Render("  next") +
+			"   " + KeyStyle.Render("esc") + MutedStyle.Render("  cancel")
+		fields += "\n\n" + fitRenderedLine(actionHint, bodyWidth)
+		fields += "\n" + fitRenderedLine(navigationHint, bodyWidth)
+	}
 
-	panelWidth := 62
-	if m.width > 0 && m.width-4 < panelWidth {
-		panelWidth = m.width - 4
-	}
-	if panelWidth < 24 {
-		panelWidth = 24
-	}
-	panel := panelStyle.Width(panelWidth).Render(fields)
-	if m.width > 0 {
-		panel = lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(panel)
-	}
+	panel := renderResponsivePanel(panelStyle, fields, panelWidth)
+	panel = centerToWidth(panel, width)
 	return logo + "\n" + panel
 }

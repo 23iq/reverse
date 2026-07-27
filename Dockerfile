@@ -2,14 +2,16 @@
 
 FROM golang:1.24-alpine AS build
 
+ARG VERSION=v1alpha
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
+COPY Dockerfile assets.go ./
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X github.com/23iq/reverse/internal/buildinfo.Version=${VERSION}" \
     -o /out/reverse \
     ./cmd/reverse && \
     CGO_ENABLED=0 GOOS=linux go build \

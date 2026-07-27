@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestSetupProgressMergesStageTransitions(t *testing.T) {
@@ -165,6 +166,57 @@ func TestSetupProgressViewShowsDryRunCommand(t *testing.T) {
 	for _, part := range []string{"Container", "Dry run", "$", "docker compose up -d"} {
 		if !strings.Contains(view, part) {
 			t.Errorf("view does not contain %q", part)
+		}
+	}
+}
+
+func TestSetupProgressAnimationKeepsViewDimensions(t *testing.T) {
+	for variant := range logoVariants {
+		model := NewSetupProgressModel(nil)
+		model.logo = newLogoWithVariant(variant)
+		model.width = 80
+		model.height = 28
+		model.completed = true
+		model.stages = []ProgressStage{{
+			Stage:   "Container",
+			Status:  ProgressDone,
+			Message: "Server image is ready",
+		}}
+
+		wantWidth, wantHeight := lipgloss.Size(model.View())
+		for frame := 1; frame < 48; frame++ {
+			model.logo.Frame = frame
+			gotWidth, gotHeight := lipgloss.Size(model.View())
+			if gotWidth != wantWidth || gotHeight != wantHeight {
+				t.Fatalf(
+					"variant %q setup frame %d is %dx%d, want %dx%d",
+					logoVariants[variant].name,
+					frame,
+					gotWidth,
+					gotHeight,
+					wantWidth,
+					wantHeight,
+				)
+			}
+		}
+	}
+}
+
+func TestSetupProgressNarrowViewDoesNotOverflow(t *testing.T) {
+	model := NewSetupProgressModel(nil)
+	model.completed = true
+	model.stages = []ProgressStage{{
+		Stage:   "A very long setup stage name",
+		Status:  ProgressDone,
+		Message: strings.Repeat("long message ", 12),
+		Command: strings.Repeat("docker compose ", 12),
+	}}
+
+	for _, width := range []int{42, 23, 12, 7, 1} {
+		next, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+		resized := next.(SetupProgressModel)
+		if got := lipgloss.Width(resized.View()); got > width {
+			t.Errorf("setup width %d rendered %d cells", width, got)
 		}
 	}
 }

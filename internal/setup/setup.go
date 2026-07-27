@@ -84,12 +84,12 @@ func Run(ctx context.Context, options Options, progress ProgressFunc) (runErr er
 	if opts.DryRun {
 		return runDryPlan(opts, manager, progress)
 	}
-	if info, statErr := os.Stat(filepath.Join(opts.SourceDir, "Dockerfile")); statErr != nil || info.IsDir() {
-		if statErr == nil {
-			statErr = errors.New("path is a directory")
-		}
-		return fmt.Errorf("source directory must contain Dockerfile: %w", statErr)
+	buildContext, cleanupBuildContext, err := prepareBuildContext(opts.SourceDir)
+	if err != nil {
+		return err
 	}
+	defer cleanupBuildContext()
+	opts.SourceDir = buildContext
 
 	emit(progress, StageDNS, StatusRunning, "Checking DNS records", "")
 	if err := verifyDNS(ctx, opts, progress); err != nil {

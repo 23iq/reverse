@@ -54,8 +54,10 @@ type Options struct {
 	Password string
 	Email    string
 
-	DryRun    bool
-	RootDir   string
+	DryRun  bool
+	RootDir string
+	// SourceDir overrides the embedded Docker build context. An empty value
+	// uses assets compiled into the reverse binary.
 	SourceDir string
 
 	ServerImage   string

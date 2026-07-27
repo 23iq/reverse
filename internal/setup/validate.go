@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -45,18 +44,13 @@ func normalizeOptions(opts Options) (Options, error) {
 	}
 	opts.RootDir = filepath.Clean(opts.RootDir)
 
-	if opts.SourceDir == "" {
-		workingDir, err := os.Getwd()
+	if opts.SourceDir != "" {
+		sourceDir, err := filepath.Abs(opts.SourceDir)
 		if err != nil {
-			return Options{}, fmt.Errorf("get working directory: %w", err)
+			return Options{}, fmt.Errorf("resolve source directory: %w", err)
 		}
-		opts.SourceDir = workingDir
+		opts.SourceDir = filepath.Clean(sourceDir)
 	}
-	sourceDir, err := filepath.Abs(opts.SourceDir)
-	if err != nil {
-		return Options{}, fmt.Errorf("resolve source directory: %w", err)
-	}
-	opts.SourceDir = filepath.Clean(sourceDir)
 
 	if opts.ServerImage == "" {
 		opts.ServerImage = "reverse-server:local"
