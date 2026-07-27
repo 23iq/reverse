@@ -1,0 +1,11 @@
+# The server image only needs the Go module and source packages. Keeping the
+# context as an allowlist prevents unrelated VPS files from entering BuildKit
+# cache when setup is run from a working tree that contains local secrets.
+**
+!Dockerfile
+!go.mod
+!go.sum
+!cmd
+!cmd/**
+!internal
+!internal/**

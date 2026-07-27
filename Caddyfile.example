@@ -1,0 +1,8 @@
+# reverse --setup writes the concrete domain and certificate paths to
+# /etc/caddy/Caddyfile. These environment variables make this copy reusable.
+
+{$REVERSE_DOMAIN} {
+	tls {$REVERSE_CERT_FILE} {$REVERSE_KEY_FILE}
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8787
+}

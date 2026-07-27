@@ -1,0 +1,7 @@
+/bin/
+/reverse
+/reverse-setup/
+*.log
+*.test
+.DS_Store
+
